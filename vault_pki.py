@@ -77,6 +77,7 @@ from salt.utils import minions as salt_minion_utils
 
 CERT_FILENAME = 'cert.pem'
 FULLCHAIN_FILENAME = 'fullchain.pem'
+SHORTCHAIN_FILENAME = 'chain.pem'
 
 CERT_VALIDITY_PERIOD = '{:d}h'.format(30 * 24)
 
@@ -209,6 +210,7 @@ def _write_certs_to_minion(fqdn, dest_path, cert_data):
     """
     client = salt_client.LocalClient(SALT_MASTER_CONFIG)
     cert_path = os.path.join(dest_path, CERT_FILENAME)
+    shortchain_path = os.path.join(dest_path, SHORTCHAIN_FILENAME)
     fullchain_path = os.path.join(dest_path, FULLCHAIN_FILENAME)
     cert = cert_data['certificate']
     ca_chain = '\n'.join(cert_data['ca_chain'])
@@ -217,6 +219,11 @@ def _write_certs_to_minion(fqdn, dest_path, cert_data):
         fqdn,
         'file.write',
         [cert_path, cert]
+    )
+    write_cert = client.cmd(
+        fqdn,
+        'file.write',
+        [shortchain_path, ca_chain]
     )
     write_fullchain = client.cmd(
         fqdn,
