@@ -84,14 +84,6 @@ SALT_MASTER_CONFIG = '/etc/salt/master'
 
 default_level = logging.INFO
 log = logging.getLogger(__file__)
-log.setLevel(default_level)
-log_formatter = logging.Formatter(('%(asctime)s - %(name)s - %(levelname)s'
-                                   ' - %(message)s'))
-log_handler = logging.StreamHandler()
-log_handler.setFormatter(log_formatter)
-log_handler.setLevel(default_level)
-log.addHandler(log_handler)
-
 
 class ConfigError(Exception):
     """Error to raise if config is invalid or incomplete."""
@@ -115,6 +107,18 @@ def get_secret_id(source="~/.vault-id"):
         fd.close()
 
     return user_id
+
+def _init_log():
+    global log
+
+    if not len(log.handlers):
+        log.setLevel(default_level)
+        log_formatter = logging.Formatter(('%(asctime)s - %(name)s - %(levelname)s'
+                                        ' - %(message)s'))
+        log_handler = logging.StreamHandler()
+        log_handler.setFormatter(log_formatter)
+        log_handler.setLevel(default_level)
+        log.addHandler(log_handler)
 
 
 def _get_host_overrides(config, hostname):
@@ -232,17 +236,27 @@ def main(**kwargs):
         csr: string PEM encoded certificate signing request (CSR)
         path: string destination path on the minion to write back certs
     """
-    fqdn = kwargs.get('host')
+    host = kwargs.get('host')
     csr = kwargs.get('csr')
     dest_cert_path = kwargs.get('path')
 
+    _init_log()
+
+    try:
+        fqdn, _, ip_list = socket.gethostbyname_ex(host)
+    except socket.gaierror:
+        log.warning('Failed to lookup FQDN for minion "{}"'.format(
+                    host))
+        raise SigningError('Failed FQDN lookup.')
+
     log.info('Received CSR for {}'.format(fqdn))
+
     full_config = salt_config.api_config(SALT_MASTER_CONFIG)
     config = full_config.get('vault_pki_runner')
     if _verify_csr_ok(fqdn, csr):
         vault_conn = _get_vault_connection(config)
         #TODO(dmw) Re-factor to slim main() and handle defaults better.
-        host_overrides = _get_host_overrides(config, fqdn)
+        host_overrides = _get_host_overrides(config, host)
         if host_overrides.get('ttl'):
             validity_period = host_overrides['ttl']
         else:
@@ -256,19 +270,16 @@ def main(**kwargs):
                 alt_names.add(name)
             log.info('Sending Vault signing with extra SANs: {}'.format(
                 ','.join(alt_names)))
-        ip_list = []
+        ip_san_list = []
         if host_overrides.get('ip_sans'):
-            try:
-                _, _, ip_list = socket.gethostbyname_ex(fqdn)
-                log.info('Vault signing with IPSANs: {}'.format(
-                    ', '.join(ip_list)))
-            except socket.gaierror:
-                log.warning('Failed to lookup FQDN "{}" for IPSANs'.format(
-                    fqdn))
+            ip_san_list = ip_list
+            log.info('Vault signing with IPSANs: {}'.format(
+                ', '.join(ip_list)))
+
         # Backwards compatible Salt 2018 fix
         fqdn = fqdn if type(fqdn) == unicode else six.u(fqdn)
         signing_params = {'alt_names': ','.join(alt_names),
-                          'ip_sans': ','.join(ip_list),
+                          'ip_sans': ','.join(ip_san_list),
                           'csr': csr,
                           'common_name': fqdn,
                           'format': 'pem',
@@ -282,7 +293,7 @@ def main(**kwargs):
             log.error('Vault error: {}'.format(err))
             raise SigningError('Error signing from vault!')
         cert_data = vault_response.json()['data']
-        write_ok = _write_certs_to_minion(fqdn, dest_cert_path, cert_data)
+        write_ok = _write_certs_to_minion(host, dest_cert_path, cert_data)
         if not write_ok:
             log.error('Error writing cert to minion!')
         else:
